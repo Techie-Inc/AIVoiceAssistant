@@ -7,4 +7,5 @@ torch==2.1.2
 requests==2.31.0
 webrtcvad==2.0.10
 pydub==0.25.1
-soundfile==0.12.1 
+soundfile==0.12.1
+google-cloud-texttospeech==2.14.1 

@@ -1,72 +1,42 @@
 import os
-import subprocess
+from google.cloud import texttospeech
 from dotenv import load_dotenv
-import tempfile
+import base64
 
 load_dotenv()
 
 class TextToSpeech:
     def __init__(self):
-        self.piper_exe = self._sanitize_path(os.getenv('PIPER_EXE_PATH'))
-        self.model_path = self._sanitize_path(os.getenv('PIPER_MODEL_PATH'))
-        print(f"Using Piper executable: {self.piper_exe}")
-        print(f"Using Piper model: {self.model_path}")
+        # Initialize Google Cloud client
+        self.client = texttospeech.TextToSpeechClient()
         
-        # Verify piper executable exists and is runnable
-        self._verify_piper()
+        # Configure voice settings
+        self.voice = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            name="en-US-Standard-A"
+        )
         
-    def _verify_piper(self):
-        """Verify piper executable exists and can run"""
-        if not os.path.exists(self.piper_exe):
-            raise FileNotFoundError(f"Piper executable not found: {self.piper_exe}")
-            
-        try:
-            # Test piper with --help command
-            result = subprocess.run([self.piper_exe, '--help'], 
-                                 capture_output=True, 
-                                 text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"Piper test failed: {result.stderr}")
-        except Exception as e:
-            raise RuntimeError(f"Failed to run piper executable: {e}")
-        
-    def _sanitize_path(self, path):
-        """Clean and normalize the file path for Windows"""
-        if path is None:
-            raise ValueError("Path not set in .env file")
-            
-        # Remove quotes if present
-        path = path.strip('"\'')
-        
-        # Convert to raw string to handle Windows paths
-        path = path.replace('\\', '\\\\')
-        
-        return path
+        # Configure audio settings
+        self.audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.LINEAR16
+        )
 
     def speak(self, text, output_path="output.wav"):
         try:
-            # Build the piper command
-            cmd = [
-                self.piper_exe,
-                '-m', self.model_path,
-                '-f', output_path
-            ]
+            # Set the text input to be synthesized
+            synthesis_input = texttospeech.SynthesisInput(text=text)
 
-            # Run piper with text piped to stdin
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+            # Perform the text-to-speech request
+            response = self.client.synthesize_speech(
+                input=synthesis_input,
+                voice=self.voice,
+                audio_config=self.audio_config
             )
-            
-            # Send text to piper's stdin and get output
-            stdout, stderr = process.communicate(input=text)
-            
-            if process.returncode != 0:
-                raise RuntimeError(f"Piper failed: {stderr}")
-            
+
+            # Write the response to the output file
+            with open(output_path, "wb") as out:
+                out.write(response.audio_content)
+                
             return output_path
             
         except Exception as e:
