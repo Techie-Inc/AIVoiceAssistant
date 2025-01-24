@@ -10,11 +10,17 @@ class TextToSpeech:
         # Initialize Google Cloud client
         self.client = texttospeech.TextToSpeechClient()
         
+        # Get voice settings from environment
+        self.language_code = os.getenv('GOOGLE_TTS_LANGUAGE', 'en-US')
+        self.voice_name = os.getenv('GOOGLE_TTS_VOICE', 'en-US-Standard-A')
+        
         # Configure voice settings
         self.voice = texttospeech.VoiceSelectionParams(
-            language_code="en-US",
-            name="en-US-Standard-A"
+            language_code=self.language_code,
+            name=self.voice_name
         )
+        
+        print(f"Using Google TTS with voice: {self.voice_name} ({self.language_code})")
         
         # Configure audio settings
         self.audio_config = texttospeech.AudioConfig(
