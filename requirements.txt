@@ -10,3 +10,7 @@ pydub==0.25.1
 soundfile==0.12.1
 google-cloud-texttospeech==2.14.1
 openai
+beautifulsoup4
+requests
+googlesearch-python
+pytz
