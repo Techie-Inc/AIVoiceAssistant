@@ -5,6 +5,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from web_tools import WebTools
 import json
+import traceback
 
 load_dotenv()
 
@@ -64,7 +65,11 @@ class LLMClient:
                 }
             }
         ]
-        
+
+    def debug_print(self, *args, **kwargs):
+        if self.debug:
+            print(*args, **kwargs)
+
     def _load_system_prompt(self):
         """Load the system prompt from file"""
         try:
@@ -74,8 +79,117 @@ class LLMClient:
         except Exception as e:
             print(f"Error loading system prompt: {e}")
             return "You are a helpful AI assistant."
-        
+
+    def _make_llm_call(self, messages, include_functions=True):
+        """Make a call to the LLM (either OpenAI or local)"""
+        try:
+            self.debug_print(f"\n[DEBUG] Sending request to {self.provider} LLM...")
+            
+            if self.provider == 'openai':
+                # Prepare OpenAI request
+                kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": self.max_tokens
+                }
+                if include_functions:
+                    kwargs.update({
+                        "functions": self.function_schemas,
+                        "function_call": "auto"
+                    })
+                response = self.client.chat.completions.create(**kwargs)
+                return response.choices[0].message
+                
+            else:  # local
+                # Prepare local LLM request
+                request_data = {
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": self.max_tokens
+                }
+                if include_functions:
+                    request_data.update({
+                        "functions": self.function_schemas,
+                        "function_call": "auto"
+                    })
+                    
+                response = requests.post(
+                    f"{self.api_url}/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    json=request_data
+                )
+                
+                if response.status_code != 200:
+                    self.debug_print(f"\n[DEBUG] Error from LLM: {response.status_code}")
+                    return None
+                    
+                return response.json()['choices'][0]['message']
+                
+        except Exception as e:
+            self.debug_print(f"\n[DEBUG] LLM error: {e}")
+            if self.debug:
+                self.debug_print("[DEBUG] Full error details:")
+                self.debug_print(traceback.format_exc())
+            return None
+
+    def _handle_function_call(self, response_message, messages):
+        """Handle function calling for both providers"""
+        try:
+            # Extract function call details
+            if self.provider == 'openai':
+                # Check if function_call exists and has required attributes
+                if not hasattr(response_message, 'function_call'):
+                    self.debug_print("\n[DEBUG] No function call in response")
+                    return response_message.content
+                    
+                function_name = response_message.function_call.name
+                function_args = json.loads(response_message.function_call.arguments)
+            else:
+                if 'function_call' not in response_message:
+                    self.debug_print("\n[DEBUG] No function call in response")
+                    return response_message['content']
+                    
+                function_name = response_message['function_call']['name']
+                function_args = json.loads(response_message['function_call']['arguments'])
+            
+            self.debug_print(f"\n[DEBUG] Function call requested:")
+            self.debug_print(f"Function: {function_name}")
+            self.debug_print(f"Arguments: {json.dumps(function_args, indent=2)}")
+            
+            # Call the function
+            function_to_call = self.available_functions[function_name]
+            self.debug_print("\n[DEBUG] Executing function...")
+            function_response = function_to_call(**function_args)
+            
+            self.debug_print("\n[DEBUG] Adding function response to conversation:")
+            self.debug_print(f"Response: {function_response}")
+            
+            # Add function response to messages
+            messages.append({
+                "role": "function",
+                "name": function_name,
+                "content": function_response
+            })
+            
+            # Get final response
+            self.debug_print("\n[DEBUG] Getting final response from LLM...")
+            final_message = self._make_llm_call(messages, include_functions=False)
+            
+            if not final_message:
+                return None
+                
+            final_response = final_message.content if self.provider == 'openai' else final_message['content']
+            self.debug_print(f"\n[DEBUG] Final response: {final_response}")
+            return final_response
+            
+        except Exception as e:
+            self.debug_print(f"\n[DEBUG] Function handling error: {e}")
+            self.debug_print(traceback.format_exc())
+            return None
+
     def get_response(self, prompt):
+        """Get response from LLM with function calling support"""
         try:
             # Build messages with conversation history
             messages = [
@@ -89,11 +203,26 @@ class LLMClient:
             # Add current prompt
             messages.append({"role": "user", "content": prompt})
             
-            # Get response based on provider
-            if self.provider == 'openai':
-                assistant_response = self._get_openai_response(messages)
+            # Get initial response
+            response_message = self._make_llm_call(messages)
+            if not response_message:
+                self.debug_print("\n[DEBUG] No response from LLM")
+                return "I apologize, but I encountered an error processing your request."
+            
+            # Check for function call
+            has_function_call = (
+                (self.provider == 'openai' and hasattr(response_message, 'function_call') and response_message.function_call is not None) or
+                (self.provider == 'local' and 'function_call' in response_message and response_message['function_call'] is not None)
+            )
+            
+            if has_function_call:
+                assistant_response = self._handle_function_call(response_message, messages)
+                if not assistant_response:
+                    self.debug_print("\n[DEBUG] Error in function handling")
+                    return "I apologize, but I encountered an error while processing the function call."
             else:
-                assistant_response = self._get_local_response(messages)
+                assistant_response = response_message.content if self.provider == 'openai' else response_message['content']
+                self.debug_print(f"\n[DEBUG] Direct response (no function call): {assistant_response}")
             
             if assistant_response:
                 # Update conversation history
@@ -103,96 +232,10 @@ class LLMClient:
             return assistant_response
                 
         except Exception as e:
-            print(f"LLM error: {e}")
-            return None
-            
-    def _get_openai_response(self, messages):
-        """Get response from OpenAI API with function calling"""
-        try:
-            self.debug_print("\n[DEBUG] Sending request to OpenAI...")
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=self.max_tokens,
-                functions=self.function_schemas,
-                function_call="auto"
-            )
-            
-            response_message = response.choices[0].message
-            
-            # Check if the model wants to call a function
-            if response_message.function_call:
-                function_name = response_message.function_call.name
-                function_args = json.loads(response_message.function_call.arguments)
-                
-                self.debug_print(f"\n[DEBUG] Function call requested:")
-                self.debug_print(f"Function: {function_name}")
-                self.debug_print(f"Arguments: {json.dumps(function_args, indent=2)}")
-                
-                # Call the function
-                function_to_call = self.available_functions[function_name]
-                self.debug_print("\n[DEBUG] Executing function...")
-                function_response = function_to_call(**function_args)
-                
-                self.debug_print("\n[DEBUG] Adding function response to conversation:")
-                self.debug_print(f"Response: {function_response}")
-                
-                # Add function response to messages
-                messages.append({
-                    "role": "function",
-                    "name": function_name,
-                    "content": function_response
-                })
-                
-                # Get final response from model
-                self.debug_print("\n[DEBUG] Getting final response from OpenAI...")
-                second_response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.7,
-                    max_tokens=self.max_tokens
-                )
-                
-                final_response = second_response.choices[0].message.content
-                self.debug_print(f"\n[DEBUG] Final response: {final_response}")
-                return final_response
-            
-            self.debug_print(f"\n[DEBUG] Direct response (no function call): {response_message.content}")
-            return response_message.content
-            
-        except Exception as e:
-            self.debug_print(f"\n[DEBUG] OpenAI API error: {e}")
-            if self.debug:
-                self.debug_print("[DEBUG] Full error details:")
-                import traceback
-                self.debug_print(traceback.format_exc())
-            return None
-        
-    def _get_local_response(self, messages):
-        """Get response from local LM Studio API"""
-        response = requests.post(
-            f"{self.api_url}/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-            },
-            json={
-                "messages": messages,
-                "temperature": 0.7,
-                "max_tokens": self.max_tokens,
-            }
-        )
-        
-        if response.status_code == 200:
-            return response.json()['choices'][0]['message']['content']
-        else:
-            print(f"Error: {response.status_code}")
-            return None
-            
+            self.debug_print(f"\n[DEBUG] Error in get_response: {e}")
+            self.debug_print(traceback.format_exc())
+            return "I apologize, but I encountered an error processing your request."
+
     def clear_history(self):
         """Clear the conversation history"""
-        self.conversation_history.clear()
-
-    def debug_print(self, *args, **kwargs):
-        if self.debug:
-            print(*args, **kwargs) 
+        self.conversation_history.clear() 
