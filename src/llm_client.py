@@ -104,33 +104,55 @@ class LLMClient:
             else:  # local
                 # Prepare local LLM request
                 request_data = {
+                    "model": "local-model",
                     "messages": messages,
                     "temperature": 0.7,
-                    "max_tokens": self.max_tokens
+                    "max_tokens": self.max_tokens,
+                    "stream": False,
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": schema
+                        } for schema in self.function_schemas
+                    ] if include_functions else None,
+                    "tool_choice": "auto" if include_functions else "none"
                 }
-                if include_functions:
-                    request_data.update({
-                        "functions": self.function_schemas,
-                        "function_call": "auto"
-                    })
-                    
+                
+                self.debug_print("\n[DEBUG] Local LLM request data:")
+                self.debug_print(json.dumps(request_data, indent=2))
+                
                 response = requests.post(
                     f"{self.api_url}/chat/completions",
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}"
+                    },
                     json=request_data
                 )
                 
                 if response.status_code != 200:
                     self.debug_print(f"\n[DEBUG] Error from LLM: {response.status_code}")
+                    self.debug_print(f"Response: {response.text}")
                     return None
-                    
-                return response.json()['choices'][0]['message']
+                
+                response_data = response.json()
+                self.debug_print("\n[DEBUG] Local LLM response data:")
+                self.debug_print(json.dumps(response_data, indent=2))
+                
+                # Handle tool calls (function calls)
+                message = response_data['choices'][0]['message']
+                if 'tool_calls' in message:  # Convert tool_calls to function_call format
+                    tool_call = message['tool_calls'][0]
+                    message['function_call'] = {
+                        'name': tool_call['function']['name'],
+                        'arguments': tool_call['function']['arguments']
+                    }
+                
+                return message
                 
         except Exception as e:
             self.debug_print(f"\n[DEBUG] LLM error: {e}")
-            if self.debug:
-                self.debug_print("[DEBUG] Full error details:")
-                self.debug_print(traceback.format_exc())
+            self.debug_print(traceback.format_exc())
             return None
 
     def _handle_function_call(self, response_message, messages):
@@ -165,12 +187,19 @@ class LLMClient:
             self.debug_print("\n[DEBUG] Adding function response to conversation:")
             self.debug_print(f"Response: {function_response}")
             
-            # Add function response to messages
-            messages.append({
-                "role": "function",
-                "name": function_name,
-                "content": function_response
-            })
+            # Add function response to messages with appropriate role
+            if self.provider == 'openai':
+                messages.append({
+                    "role": "function",
+                    "name": function_name,
+                    "content": function_response
+                })
+            else:
+                messages.append({
+                    "role": "tool",  # Use 'tool' role for local LLM
+                    "name": function_name,
+                    "content": function_response
+                })
             
             # Get final response
             self.debug_print("\n[DEBUG] Getting final response from LLM...")

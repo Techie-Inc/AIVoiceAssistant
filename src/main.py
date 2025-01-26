@@ -26,7 +26,8 @@ class VoiceAssistant:
             "drivers",
             "jobbers",
             "james",
-            "thomas"
+            "thomas",
+            "jalvis",
         ]
         
         self.conversation_timeout = 20  # seconds
